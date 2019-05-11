@@ -1,0 +1,88 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  fleet-control
+Globals:
+  Function:
+    Timeout: 3
+
+Resources:
+  TruckSensorRule:
+    Type: AWS::IoT::TopicRule
+    Properties:
+      RuleName: TruckSensorDataToAnalytics
+      TopicRulePayload:
+        RuleDisabled: true
+        Sql: "SELECT * FROM 'truck_sensor'"
+        Actions:
+          - IotAnalytics:
+              ChannelName: !Ref TruckSensorChannel
+              RoleArn: !GetAtt TruckSensorRuleRole.Arn
+  TruckSensorRuleRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: [iot.amazonaws.com]
+            Action: ['sts:AssumeRole']
+      Path: /
+      Policies:
+        - PolicyName: root
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action: ['iotanalytics:BatchPutMessage']
+                Resource: '*'
+  TruckSensorTransformFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: analytics-transform/
+      Handler: app.lambdaHandler
+      Runtime: nodejs8.10
+  TransformFunctionPermissions:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt TruckSensorTransformFunction.Arn
+      Principal: iotanalytics.amazonaws.com
+  TruckSensorChannel:
+    Type: AWS::IoTAnalytics::Channel
+    Properties:
+      ChannelName: TruckSensorChannel
+  TruckSensorPipeline:
+    Type: AWS::IoTAnalytics::Pipeline
+    DependsOn:
+      - TruckSensorChannel
+      - TruckSensorDatastore
+    Properties:
+      PipelineName: TruckSensorPipeline
+      PipelineActivities:
+        - Channel:
+            Name: ChannelActivity
+            ChannelName: TruckSensorChannel
+            Next: LambdaActivity
+          Lambda:
+            Name: LambdaActivity
+            LambdaName: !Ref TruckSensorTransformFunction
+            BatchSize: 10
+            Next: DatastoreActivity
+          Datastore:
+            Name: DatastoreActivity
+            DatastoreName: TruckSensorDatastore
+  TruckSensorDatastore:
+    Type: AWS::IoTAnalytics::Datastore
+    Properties:
+      DatastoreName: TruckSensorDatastore
+  TruckSensorDataset:
+    Type: AWS::IoTAnalytics::Dataset
+    DependsOn: [ TruckSensorDatastore ]
+    Properties:
+      DatasetName: TruckSensorDataset
+      Actions:
+        - ActionName: SqlAction
+          QueryAction:
+            SqlQuery: SELECT * FROM TruckSensorDatastore
